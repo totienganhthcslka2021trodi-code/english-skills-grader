@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+body{font-family:Arial,Segoe UI,sans-serif;color:#203047;margin:0;padding:12px;background:#f6f9fc}
+video{width:100%;max-height:420px;background:#111;border-radius:12px;display:block}
+button{border:0;border-radius:9px;padding:10px 13px;margin:5px 4px 5px 0;background:#0d9488;color:white;font-weight:700;cursor:pointer}
+button:disabled{opacity:.45;cursor:not-allowed}.status{font-weight:600;padding:8px 0;min-height:22px}.warn{color:#a33}.row{display:flex;flex-wrap:wrap}
+</style>
+</head><body>
+<video id="preview" autoplay muted playsinline></video>
+<div class="status" id="status">Nhấn “Bật camera” và cho phép truy cập camera/microphone.</div>
+<div class="row">
+<button id="camera">📷 Bật camera</button><button id="cameraOff" disabled>⏹ Tắt camera</button>
+<button id="record" disabled>🔴 Bắt đầu ghi</button><button id="stop" disabled>⏹ Dừng</button>
+<button id="retake" disabled>↻ Ghi lại</button><button id="delete" disabled>🗑 Xóa video</button>
+<button id="send" disabled>📤 Chuyển video sang phần chấm</button>
+</div>
+<div id="playback"></div>
+<script>
+const preview=document.getElementById('preview'),statusEl=document.getElementById('status');
+let stream=null,recorder=null,chunks=[],recordedBlob=null,seconds=0,timer=null;
+let maxSeconds=120,maxBytes=12*1024*1024;
+function sendValue(value){window.parent.postMessage({type:'streamlit:setComponentValue',value:value,dataType:'json'},'*');}
+function setStatus(t){statusEl.textContent=t;}
+function stopStream(){if(stream){stream.getTracks().forEach(t=>t.stop());stream=null;}}
+document.getElementById('camera').onclick=async()=>{
+ try{stream=await navigator.mediaDevices.getUserMedia({video:{width:{ideal:640},height:{ideal:480},frameRate:{ideal:20,max:24}},audio:true});preview.srcObject=stream;document.getElementById('record').disabled=false;document.getElementById('cameraOff').disabled=false;document.getElementById('camera').disabled=true;setStatus('Camera và microphone sẵn sàng.');}
+ catch(e){setStatus('Không mở được camera/microphone: '+e.message);}
+};
+document.getElementById('cameraOff').onclick=()=>{stopStream();if(!recordedBlob){preview.srcObject=null;preview.removeAttribute('src');preview.controls=false;}document.getElementById('record').disabled=true;document.getElementById('cameraOff').disabled=true;document.getElementById('camera').disabled=false;setStatus(recordedBlob?'Camera đã tắt; video đã ghi vẫn được giữ.':'Đã tắt camera và microphone.');};
+document.getElementById('record').onclick=()=>{
+ if(!stream)return;chunks=[];let mime=['video/webm;codecs=vp8,opus','video/webm;codecs=vp9,opus','video/webm'].find(x=>MediaRecorder.isTypeSupported(x));
+ try{recorder=new MediaRecorder(stream,{mimeType:mime||undefined,videoBitsPerSecond:350000,audioBitsPerSecond:48000});}catch(e){setStatus('Trình duyệt không hỗ trợ ghi video: '+e.message);return;}
+ recorder.ondataavailable=e=>{if(e.data&&e.data.size)chunks.push(e.data);};recorder.onstop=()=>{recordedBlob=new Blob(chunks,{type:recorder.mimeType||'video/webm'});preview.srcObject=null;preview.src=URL.createObjectURL(recordedBlob);preview.controls=true;document.getElementById('retake').disabled=false;document.getElementById('delete').disabled=false;document.getElementById('send').disabled=false;setStatus('Đã ghi '+seconds+' giây • '+(recordedBlob.size/1024/1024).toFixed(2)+' MB. Xem lại trước khi gửi.');};
+ recorder.start(1000);seconds=0;document.getElementById('record').disabled=true;document.getElementById('stop').disabled=false;setStatus('Đang ghi: 0 giây');timer=setInterval(()=>{seconds++;setStatus('Đang ghi: '+seconds+' giây / tối đa '+maxSeconds);if(seconds>=maxSeconds)document.getElementById('stop').click();},1000);
+};
+document.getElementById('stop').onclick=()=>{if(recorder&&recorder.state!=='inactive')recorder.stop();clearInterval(timer);document.getElementById('stop').disabled=true;};
+function resetRecording(){recordedBlob=null;chunks=[];preview.pause();preview.controls=false;preview.removeAttribute('src');if(stream)preview.srcObject=stream;document.getElementById('retake').disabled=true;document.getElementById('delete').disabled=true;document.getElementById('send').disabled=true;document.getElementById('record').disabled=!stream;document.getElementById('playback').innerHTML='';sendValue(null);setStatus(stream?'Có thể ghi lại video.':'Video đã xóa. Bật camera để ghi lại.');}
+document.getElementById('retake').onclick=resetRecording;document.getElementById('delete').onclick=resetRecording;
+document.getElementById('send').onclick=async()=>{
+ if(!recordedBlob)return;if(recordedBlob.size>maxBytes){setStatus('Video quá 12 MB. Hãy ghi ngắn hơn.');return;}
+ setStatus('Đang chuyển video vào ứng dụng...');const ab=await recordedBlob.arrayBuffer();const bytes=new Uint8Array(ab);let binary='';for(let i=0;i<bytes.length;i+=32768)binary+=String.fromCharCode(...bytes.subarray(i,i+32768));
+ sendValue({video_b64:btoa(binary),filename:'webcam_recording.webm',size:recordedBlob.size});setStatus('Đã chuyển video. Ứng dụng sẽ hiển thị video để xem lại.');
+};
+window.addEventListener('message',event=>{if(event.data&&event.data.type==='streamlit:render'){const args=event.data.args||{};maxSeconds=args.max_seconds||120;maxBytes=args.max_bytes||12*1024*1024;}});
+window.parent.postMessage({type:'streamlit:componentReady',apiVersion:1},'*');window.parent.postMessage({type:'streamlit:setFrameHeight',height:520},'*');
+</script></body></html>
