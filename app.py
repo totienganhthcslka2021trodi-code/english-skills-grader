@@ -19,31 +19,11 @@ import streamlit as st
 import streamlit.components.v1 as components
 from openai import OpenAI
 
-# V12: Live recorder served by a local HTTP sidecar, avoiding Streamlit custom-component frontend loading.
+# V13 WEB: Browser webcam recorder custom component.
 _SCRIPT_DIR = Path(__file__).resolve().parent
-_LIVE_UPLOAD_PATH = Path(tempfile.gettempdir()) / "english_skills_grader_live_upload.json"
-_LIVE_PORT = 8502
-import threading
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-
-_LIVE_RECORDER_HTML = r"""<!doctype html><html lang=\"vi\"><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Live Recorder</title><style>body{font-family:Segoe UI,Arial;background:#f4f7fb;color:#203047;margin:12px}button{border:0;border-radius:9px;padding:11px 15px;margin:4px;background:#0d9488;color:white;font-weight:700;cursor:pointer}button:disabled{opacity:.45}video{width:100%;max-height:390px;background:#111;border-radius:10px}#status{font-weight:600;padding:8px}</style><video id=preview autoplay muted playsinline></video><div id=status>Nhấn Bật camera và cấp quyền camera/microphone.</div><button id=cam>Bật camera</button><button id=off disabled>⏹️ Tắt camera</button><button id=rec disabled>Bắt đầu ghi</button><button id=stop disabled>Dừng</button><button id=again disabled>Ghi lại</button><button id=del disabled>🗑️ Xóa video</button><div id=play></div><button id=send disabled>Gửi video sang ứng dụng chấm</button><script>let stream,rec,chunks=[],blob,sec=0,timer;const s=document.getElementById('status'),v=document.getElementById('preview');document.getElementById('cam').onclick=async()=>{try{stream=await navigator.mediaDevices.getUserMedia({video:true,audio:true});v.srcObject=stream;document.getElementById('rec').disabled=false;document.getElementById('off').disabled=false;s.textContent='Camera và microphone đã sẵn sàng.'}catch(e){s.textContent='Lỗi camera/microphone: '+e.message}};document.getElementById('off').onclick=()=>{if(stream){stream.getTracks().forEach(t=>t.stop());stream=null;}if(!blob){v.srcObject=null;v.src='';v.controls=false;}document.getElementById('rec').disabled=true;document.getElementById('off').disabled=true;document.getElementById('cam').disabled=false;s.textContent=blob?'Đã tắt camera/microphone. Video đã ghi vẫn giữ để xem lại hoặc gửi.':'Đã tắt camera và microphone.'};document.getElementById('rec').onclick=()=>{chunks=[];let mt=['video/webm;codecs=vp8,opus','video/webm'].find(x=>MediaRecorder.isTypeSupported(x));rec=new MediaRecorder(stream,{mimeType:mt||undefined,videoBitsPerSecond:500000,audioBitsPerSecond:64000});rec.ondataavailable=e=>{if(e.data&&e.data.size)chunks.push(e.data)};rec.onstop=()=>{blob=new Blob(chunks,{type:rec.mimeType||'video/webm'});v.srcObject=null;v.src=URL.createObjectURL(blob);v.controls=true;document.getElementById('play').innerHTML='<p>Video đã ghi: '+(blob.size/1024/1024).toFixed(1)+' MB. Xem lại trước khi gửi.</p>';document.getElementById('again').disabled=false;document.getElementById('del').disabled=false;document.getElementById('send').disabled=false;s.textContent='Đã dừng ghi. Có thể xem lại, xóa hoặc gửi.'};rec.start(1000);sec=0;document.getElementById('rec').disabled=true;document.getElementById('stop').disabled=false;s.textContent='Đang ghi... tối đa 120 giây';timer=setInterval(()=>{sec++;s.textContent='Đang ghi: '+sec+' giây';if(sec>=120)document.getElementById('stop').click()},1000)};document.getElementById('stop').onclick=()=>{if(rec&&rec.state!=='inactive')rec.stop();clearInterval(timer);document.getElementById('stop').disabled=true};document.getElementById('again').onclick=()=>{blob=null;chunks=[];v.controls=false;v.src='';v.srcObject=stream;document.getElementById('play').innerHTML='';document.getElementById('again').disabled=true;document.getElementById('del').disabled=true;document.getElementById('send').disabled=true;document.getElementById('rec').disabled=false;s.textContent='Có thể ghi lại video.'};document.getElementById('del').onclick=()=>{blob=null;chunks=[];v.pause();v.controls=false;v.src='';v.srcObject=stream;document.getElementById('play').innerHTML='';document.getElementById('again').disabled=true;document.getElementById('del').disabled=true;document.getElementById('send').disabled=true;document.getElementById('rec').disabled=false;s.textContent='Đã xóa video vừa ghi. Bạn có thể ghi lại.'};document.getElementById('send').onclick=async()=>{if(!blob)return;if(blob.size>12*1024*1024){s.textContent='Video vượt 12 MB. Hãy ghi ngắn hơn.';return}s.textContent='Đang gửi video tới ứng dụng...';const b=await blob.arrayBuffer();let bin='';let a=new Uint8Array(b);for(let i=0;i<a.length;i+=32768)bin+=String.fromCharCode(...a.subarray(i,i+32768));try{let r=await fetch('/upload',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({video_b64:btoa(bin),filename:'live_recording.webm',size:blob.size})});if(!r.ok)throw Error('HTTP '+r.status);s.textContent='Đã gửi thành công! Quay lại ứng dụng và bấm “Nạp video vừa ghi”.'}catch(e){s.textContent='Không gửi được: '+e.message}};</script></html>"""
-class _LiveHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200); self.send_header('Content-Type','text/html; charset=utf-8'); self.send_header('Access-Control-Allow-Origin','*'); self.end_headers(); self.wfile.write(_LIVE_RECORDER_HTML.encode('utf-8'))
-    def do_POST(self):
-        if self.path != '/upload': self.send_error(404); return
-        try:
-            n=int(self.headers.get('Content-Length','0')); data=json.loads(self.rfile.read(n));
-            if not data.get('video_b64'): raise ValueError('Thiếu video')
-            if int(data.get('size',0))>12*1024*1024: raise ValueError('Video vượt 12 MB')
-            _LIVE_UPLOAD_PATH.write_text(json.dumps(data),encoding='utf-8')
-            self.send_response(200); self.send_header('Access-Control-Allow-Origin','*'); self.end_headers(); self.wfile.write(b'OK')
-        except Exception as e: self.send_error(400,str(e))
-    def log_message(self,*args): pass
-def _start_live_server():
-    try:
-        server=ThreadingHTTPServer(('127.0.0.1',_LIVE_PORT),_LiveHandler); server.daemon_threads=True; threading.Thread(target=server.serve_forever,daemon=True).start()
-    except OSError: pass
+_webcam_component = components.declare_component(
+    "english_skills_webcam_recorder", path=str(_SCRIPT_DIR / "webcam_component")
+)
 
 st.set_page_config(page_title="English Skills Grader V11.2 | Writing, Speaking, Video & Live Recording", page_icon="🎓", layout="wide", initial_sidebar_state="expanded")
 
@@ -1806,7 +1786,7 @@ st.caption("Bản nâng cấp thử nghiệm cục bộ. Tài khoản và bài c
 
 # ---------------- LIVE VIDEO RECORDING MODULE (V10) ----------------
 with st.expander("📹 MODULE 4 — LIVE RECORDING | Ghi hình trực tiếp và chấm AI", expanded=True):
-    st.markdown("**V12.3 Web:** mọi video đều chấm thống nhất tổng /10 (Voice /8 + Visual /2). Chọn Presenter nếu học sinh xuất hiện; chọn Presentation nếu dùng slide/hình minh họa và không xuất hiện—không bị trừ điểm vì điều đó. Tải video đã quay lên, xem lại rồi gửi AI chấm. Giới hạn 12 MB.")
+    st.markdown("**V13 Web:** mọi video đều chấm thống nhất tổng /10 (Voice /8 + Visual /2). Chọn Presenter nếu học sinh xuất hiện; chọn Presentation nếu dùng slide/hình minh họa và không xuất hiện—không bị trừ điểm vì điều đó. Tải video đã quay lên, xem lại rồi gửi AI chấm. Giới hạn 12 MB.")
     live_col1, live_col2 = st.columns(2)
     with live_col1:
         live_grade = st.selectbox("Khối lớp (Live)", [f"Lớp {i}" for i in range(6, 13)], index=3, key="live_grade")
@@ -1816,23 +1796,31 @@ with st.expander("📹 MODULE 4 — LIVE RECORDING | Ghi hình trực tiếp và
     with live_col2:
         live_prompt = st.text_area("Chủ đề / yêu cầu (Live)", key="live_prompt", placeholder="Ví dụ: Talk about your favourite festival.", height=120)
     
-    st.info("🌐 Bản Web chạy trên Internet: để đảm bảo tương thích HTTPS/Streamlit Cloud, học sinh quay video bằng điện thoại hoặc máy tính trước, sau đó tải video lên đây. Bản ghi trực tiếp webcam trên bản máy tính vẫn giữ trong bản V12.3 gốc.")
-    uploaded_live_video = st.file_uploader("📤 Tải video đã quay lên để chấm", type=["mp4", "mov", "webm", "m4v"], key="web_live_upload")
+    st.markdown("### 🎥 Quay video trực tiếp bằng webcam trên website")
+    st.caption("Cho phép trình duyệt truy cập camera và microphone. Video tối đa 120 giây và 12 MB. Nếu camera không mở, hãy kiểm tra quyền Camera/Microphone của trình duyệt.")
+    webcam_value = _webcam_component(max_seconds=120, max_bytes=12*1024*1024, key="webcam_v13")
+    if isinstance(webcam_value, dict) and webcam_value.get("video_b64"):
+        try:
+            _webcam_bytes = base64.b64decode(webcam_value["video_b64"])
+            if len(_webcam_bytes) <= 12*1024*1024:
+                st.session_state.live_capture_data = {"video_b64": webcam_value["video_b64"], "filename": webcam_value.get("filename", "webcam_recording.webm"), "size": len(_webcam_bytes)}
+                st.success("✅ Video webcam đã chuyển vào ứng dụng. Có thể chấm AI bên dưới.")
+                st.video(_webcam_bytes)
+            else:
+                st.error("Video vượt giới hạn 12 MB. Vui lòng quay ngắn hơn.")
+        except Exception as _webcam_error:
+            st.error(f"Không nhận được video từ webcam: {_webcam_error}")
+    st.markdown("---")
+    st.markdown("**Hoặc tải video đã quay sẵn:**")
+    uploaded_live_video = st.file_uploader("📤 Tải video lên để chấm", type=["mp4", "mov", "webm", "m4v"], key="web_live_upload")
     if uploaded_live_video is not None:
         web_video_bytes = uploaded_live_video.getvalue()
         if len(web_video_bytes) > 12*1024*1024:
-            st.error("Video vượt giới hạn 12 MB. Hãy nén hoặc quay video ngắn hơn.")
+            st.error("Video vượt 12 MB. Hãy ghi ngắn hơn hoặc nén video.")
         else:
             st.video(web_video_bytes)
             st.session_state.live_capture_data = {"video_b64": base64.b64encode(web_video_bytes).decode("ascii"), "filename": uploaded_live_video.name, "size": len(web_video_bytes)}
-            st.success("Đã tải video lên. Có thể xem lại và chấm AI bên dưới.")
-    if st.button("📥 Nạp video vừa ghi vào ứng dụng", key="load_live_upload", use_container_width=True):
-        if _LIVE_UPLOAD_PATH.exists():
-            try:
-                st.session_state.live_capture_data = json.loads(_LIVE_UPLOAD_PATH.read_text(encoding="utf-8"))
-                st.success("Đã nạp video. Có thể gửi AI chấm bên dưới.")
-            except Exception as _load_exc: st.error(f"Không đọc được video: {_load_exc}")
-        else: st.warning("Chưa nhận video. Hãy ghi và bấm Gửi video trong khung ghi hình trước.")
+            st.success("Đã tải video lên. Có thể chấm AI bên dưới.")
     live_capture = st.session_state.get("live_capture_data")
     if isinstance(live_capture, dict) and live_capture.get("video_b64"):
         st.success(f"Video đã ghi: {live_capture.get('size',0)/1024/1024:.1f} MB. Có thể bắt đầu chấm.")
